@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =========================================
-# STABLE FIREWALL + SAFE RESTORE + NETWORK SCAN
+# STRICT PERSONAL FIREWALL: ONLY YOUR MACHINE
 # =========================================
 
 if [ "$EUID" -ne 0 ]; then
@@ -9,45 +9,38 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Detect main interface
+# Detect main network interface
 INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
-
 if [ -z "$INTERFACE" ]; then
     echo "❌ Could not detect network interface"
     exit 1
 fi
 
-echo "✔️ Interface: $INTERFACE"
-
-# Get original IP safely
-ORIGINAL_IP=$(ip -4 addr show "$INTERFACE" | grep inet | awk '{print $2}' | head -n1)
-
-if [ -z "$ORIGINAL_IP" ]; then
-    echo "❌ Could not detect original IP"
+# Get your current IP
+MY_IP=$(ip -4 addr show "$INTERFACE" | grep inet | awk '{print $2}' | head -n1)
+if [ -z "$MY_IP" ]; then
+    echo "❌ Could not detect your IP"
     exit 1
 fi
 
-echo "✔️ Original IP: $ORIGINAL_IP"
+BACKUP="/etc/nftables.conf.backup.$(date +%F-%T)"
 
-BACKUP="/etc/nftables.conf.backup"
-
-# Backup firewall
+# Backup existing firewall
 [ -f /etc/nftables.conf ] && cp /etc/nftables.conf "$BACKUP"
 
-# ===========================
-# APPLY FIREWALL
-# ===========================
 apply_firewall() {
-    echo "🔒 Applying strict firewall..."
-
+    echo "🔒 Applying personal-only firewall..."
     apt install -y nftables >/dev/null 2>&1
 
-    cat > /etc/nftables.conf << 'EOF'
+    cat > /etc/nftables.conf << EOF
 table inet filter {
     chain input {
         type filter hook input priority 0;
         policy drop;
+        # Allow loopback
         iif lo accept
+        # Allow traffic only from your own IP
+        ip saddr $MY_IP accept
         ct state established,related accept
     }
     chain forward { policy drop; }
@@ -56,67 +49,27 @@ table inet filter {
 EOF
 
     systemctl restart nftables
+    echo "✅ Firewall active. Only your IP can communicate!"
 }
 
-# ===========================
-# RESTORE EVERYTHING
-# ===========================
-restore() {
-    echo "🔓 Restoring system..."
-
-    # Restore firewall
+restore_firewall() {
+    echo "🔓 Restoring original firewall..."
     if [ -f "$BACKUP" ]; then
         cp "$BACKUP" /etc/nftables.conf
         systemctl restart nftables
+        echo "✅ Restored successfully"
+    else
+        echo "⚠️ No backup found. Firewall left as is."
     fi
-
-    # Restore IP (only if missing)
-    CURRENT_IP=$(ip -4 addr show "$INTERFACE" | grep inet | awk '{print $2}' | head -n1)
-
-    if [ -z "$CURRENT_IP" ]; then
-        ip addr add "$ORIGINAL_IP" dev "$INTERFACE"
-    fi
-
-    echo "✅ Restored successfully"
-    exit 0
 }
 
-trap restore SIGINT SIGTERM
-
-# ===========================
-# NETWORK SCAN (LOCAL ONLY)
-# ===========================
-scan_network() {
-    SUBNET=$(ip -4 route | grep "$INTERFACE" | grep src | awk '{print $1}' | head -n1)
-
-    if [ -z "$SUBNET" ]; then
-        echo "❌ Could not detect subnet"
-        return
-    fi
-
-    echo "🔍 Scanning network: $SUBNET"
-
-    apt install -y nmap >/dev/null 2>&1
-
-    nmap -sn "$SUBNET"
-}
-
-# ===========================
-# MENU
-# ===========================
-echo "1) Apply strict firewall + scan network"
-echo "2) Restore now"
+# Menu
+echo "1) Apply personal-only firewall"
+echo "2) Restore original firewall"
 read -p "Choose: " choice
 
 case $choice in
-    1)
-        apply_firewall
-        scan_network
-        ;;
-    2)
-        restore
-        ;;
-    *)
-        echo "❌ Invalid choice"
-        ;;
+    1) apply_firewall ;;
+    2) restore_firewall ;;
+    *) echo "❌ Invalid choice" ;;
 esac
