@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =========================================
-# STRICT FIREWALL + DYNAMIC LAN IP (Safe Stop)
+# STRICT FIREWALL + DYNAMIC LAN IP (Auto-Detect Interface)
 # =========================================
 
 if [ "$EUID" -ne 0 ]; then
@@ -10,9 +10,20 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # ===========================
+# AUTO-DETECT NETWORK INTERFACE
+# ===========================
+INTERFACE=$(ip -o -4 route show to default | awk '{print $5}')
+
+if [ -z "$INTERFACE" ]; then
+    echo "❌ Could not detect a network interface."
+    exit 1
+fi
+
+echo "✔️ Detected network interface: $INTERFACE"
+
+# ===========================
 # CONFIG
 # ===========================
-INTERFACE="eth0"  # Replace with your actual interface (use `ip a` to check)
 ORIGINAL_IP=$(ip addr show $INTERFACE | grep "inet " | awk '{print $2}')
 ORIGINAL_RULES="/etc/nftables.conf.bak.$(date +%F-%T)"
 
