@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =========================================
-# STRICT FIREWALL + STABLE LAN IP ROTATION (Virtual Interface)
+# STRICT FIREWALL + VPN IP ROTATION + DEVICE SCAN
 # =========================================
 
 if [ "$EUID" -ne 0 ]; then
@@ -13,6 +13,7 @@ fi
 # AUTO-DETECT NETWORK INTERFACE
 # ===========================
 INTERFACE=$(ip -o -4 route show to default | awk '{print $5}')
+VPN_INTERFACE="tun0"  # Your VPN tunnel interface
 
 if [ -z "$INTERFACE" ]; then
     echo "❌ Could not detect a network interface."
@@ -26,7 +27,7 @@ echo "✔️ Detected network interface: $INTERFACE"
 # ===========================
 ORIGINAL_IP=$(ip addr show $INTERFACE | grep "inet " | awk '{print $2}')
 ORIGINAL_RULES="/etc/nftables.conf.bak.$(date +%F-%T)"
-VIRTUAL_INTERFACE="vir0"  # Virtual interface for IP rotation
+VPN_SUBNET="10.8.0.0/24"  # VPN subnet range (change as per your VPN config)
 
 # ===========================
 # BACKUP CURRENT FIREWALL
@@ -77,27 +78,27 @@ restore_firewall() {
 }
 
 # ===========================
-# CREATE VIRTUAL INTERFACE FOR IP ROTATION
+# CREATE VIRTUAL INTERFACE FOR VPN (if necessary)
 # ===========================
 create_virtual_interface() {
-    echo "🌐 Creating virtual network interface $VIRTUAL_INTERFACE..."
-    ip link add link "$INTERFACE" name "$VIRTUAL_INTERFACE" type macvlan mode bridge
-    ip addr add 192.168.100.100/24 dev "$VIRTUAL_INTERFACE"  # Starting IP for the virtual interface
-    ip link set "$VIRTUAL_INTERFACE" up
+    echo "🌐 Creating virtual network interface $VPN_INTERFACE..."
+    ip link add link "$INTERFACE" name "$VPN_INTERFACE" type macvlan mode bridge
+    ip addr add 10.8.0.100/24 dev "$VPN_INTERFACE"  # Starting IP for the virtual interface
+    ip link set "$VPN_INTERFACE" up
 }
 
 # ===========================
-# DYNAMIC IP LOOP (Virtual Interface)
+# DYNAMIC IP LOOP (VPN NETWORK)
 # ===========================
 dynamic_ip_loop() {
-    echo "🌐 Starting dynamic LAN IP rotation on $VIRTUAL_INTERFACE..."
+    echo "🌐 Starting dynamic VPN IP rotation on $VPN_INTERFACE..."
     trap restore_on_exit SIGINT SIGTERM
     while true; do
-        # Generate a random local IP
-        NEW_IP="192.168.$((RANDOM%254+1)).$((RANDOM%254+1))/24"
+        # Generate a random local IP within VPN subnet (10.8.x.x is an example)
+        NEW_IP="10.8.$((RANDOM%254+1)).$((RANDOM%254+1))/24"
         
-        ip addr flush dev "$VIRTUAL_INTERFACE"  # Flush current IP
-        ip addr add "$NEW_IP" dev "$VIRTUAL_INTERFACE"  # Set new random IP
+        ip addr flush dev "$VPN_INTERFACE"  # Flush current IP
+        ip addr add "$NEW_IP" dev "$VPN_INTERFACE"  # Set new random IP
 
         # Wait for a second before changing again
         sleep 1
@@ -105,13 +106,21 @@ dynamic_ip_loop() {
 }
 
 # ===========================
+# SCAN NETWORK DEVICES (using nmap)
+# ===========================
+scan_network_devices() {
+    echo "🔍 Scanning network devices in $VPN_SUBNET..."
+    nmap -sP "$VPN_SUBNET"
+}
+
+# ===========================
 # RESTORE ON EXIT (Remove Virtual Interface)
 # ===========================
 restore_on_exit() {
     echo "⚠️ Detected stop signal, restoring everything..."
-    ip addr flush dev "$VIRTUAL_INTERFACE"  # Remove IP from virtual interface
-    ip link set "$VIRTUAL_INTERFACE" down  # Bring the virtual interface down
-    ip link delete "$VIRTUAL_INTERFACE"  # Delete the virtual interface
+    ip addr flush dev "$VPN_INTERFACE"  # Remove IP from virtual interface
+    ip link set "$VPN_INTERFACE" down  # Bring the virtual interface down
+    ip link delete "$VPN_INTERFACE"  # Delete the virtual interface
     restore_firewall
     ip addr add "$ORIGINAL_IP" dev "$INTERFACE"  # Restore original IP to main interface
     echo "✅ Everything restored."
@@ -121,7 +130,7 @@ restore_on_exit() {
 # ===========================
 # MAIN
 # ===========================
-echo "1) Apply strict firewall + stable dynamic IP rotation"
+echo "1) Apply strict firewall + dynamic VPN IP rotation + scan devices"
 echo "2) Restore firewall + original IP now"
 read -p "Choose: " choice
 
@@ -129,7 +138,8 @@ case $choice in
     1)
         apply_firewall
         create_virtual_interface
-        dynamic_ip_loop
+        dynamic_ip_loop &
+        scan_network_devices
         ;;
     2)
         restore_on_exit
