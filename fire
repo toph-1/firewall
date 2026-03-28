@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =========================================
-# STRICT FIREWALL + DYNAMIC LAN IP (Auto-Detect Interface)
+# STRICT FIREWALL + STABLE LAN IP ROTATION (Virtual Interface)
 # =========================================
 
 if [ "$EUID" -ne 0 ]; then
@@ -26,6 +26,7 @@ echo "✔️ Detected network interface: $INTERFACE"
 # ===========================
 ORIGINAL_IP=$(ip addr show $INTERFACE | grep "inet " | awk '{print $2}')
 ORIGINAL_RULES="/etc/nftables.conf.bak.$(date +%F-%T)"
+VIRTUAL_INTERFACE="vir0"  # Virtual interface for IP rotation
 
 # ===========================
 # BACKUP CURRENT FIREWALL
@@ -76,27 +77,43 @@ restore_firewall() {
 }
 
 # ===========================
-# DYNAMIC IP LOOP
+# CREATE VIRTUAL INTERFACE FOR IP ROTATION
+# ===========================
+create_virtual_interface() {
+    echo "🌐 Creating virtual network interface $VIRTUAL_INTERFACE..."
+    ip link add link "$INTERFACE" name "$VIRTUAL_INTERFACE" type macvlan mode bridge
+    ip addr add 192.168.100.100/24 dev "$VIRTUAL_INTERFACE"  # Starting IP for the virtual interface
+    ip link set "$VIRTUAL_INTERFACE" up
+}
+
+# ===========================
+# DYNAMIC IP LOOP (Virtual Interface)
 # ===========================
 dynamic_ip_loop() {
-    echo "🌐 Starting dynamic LAN IP on $INTERFACE..."
+    echo "🌐 Starting dynamic LAN IP rotation on $VIRTUAL_INTERFACE..."
     trap restore_on_exit SIGINT SIGTERM
     while true; do
+        # Generate a random local IP
         NEW_IP="192.168.$((RANDOM%254+1)).$((RANDOM%254+1))/24"
-        ip addr flush dev "$INTERFACE"
-        ip addr add "$NEW_IP" dev "$INTERFACE"
+        
+        ip addr flush dev "$VIRTUAL_INTERFACE"  # Flush current IP
+        ip addr add "$NEW_IP" dev "$VIRTUAL_INTERFACE"  # Set new random IP
+
+        # Wait for a second before changing again
         sleep 1
     done
 }
 
 # ===========================
-# RESTORE ON EXIT
+# RESTORE ON EXIT (Remove Virtual Interface)
 # ===========================
 restore_on_exit() {
     echo "⚠️ Detected stop signal, restoring everything..."
-    ip addr flush dev "$INTERFACE"
-    ip addr add "$ORIGINAL_IP" dev "$INTERFACE"
+    ip addr flush dev "$VIRTUAL_INTERFACE"  # Remove IP from virtual interface
+    ip link set "$VIRTUAL_INTERFACE" down  # Bring the virtual interface down
+    ip link delete "$VIRTUAL_INTERFACE"  # Delete the virtual interface
     restore_firewall
+    ip addr add "$ORIGINAL_IP" dev "$INTERFACE"  # Restore original IP to main interface
     echo "✅ Everything restored."
     exit 0
 }
@@ -104,13 +121,14 @@ restore_on_exit() {
 # ===========================
 # MAIN
 # ===========================
-echo "1) Apply strict firewall + dynamic IP"
+echo "1) Apply strict firewall + stable dynamic IP rotation"
 echo "2) Restore firewall + original IP now"
 read -p "Choose: " choice
 
 case $choice in
     1)
         apply_firewall
+        create_virtual_interface
         dynamic_ip_loop
         ;;
     2)
