@@ -13,7 +13,7 @@ fi
 # AUTO-DETECT NETWORK INTERFACE
 # ===========================
 INTERFACE=$(ip -o -4 route show to default | awk '{print $5}')
-VPN_INTERFACE="tun0"  # Your VPN tunnel interface
+VPN_INTERFACE="tun0"  # Your VPN tunnel interface (verify with `ip a`)
 
 if [ -z "$INTERFACE" ]; then
     echo "❌ Could not detect a network interface."
@@ -28,6 +28,7 @@ echo "✔️ Detected network interface: $INTERFACE"
 ORIGINAL_IP=$(ip addr show $INTERFACE | grep "inet " | awk '{print $2}')
 ORIGINAL_RULES="/etc/nftables.conf.bak.$(date +%F-%T)"
 VPN_SUBNET="10.8.0.0/24"  # VPN subnet range (change as per your VPN config)
+SCAN_INTERFACE="$VPN_INTERFACE"  # Set nmap to use VPN interface for scanning
 
 # ===========================
 # BACKUP CURRENT FIREWALL
@@ -106,11 +107,11 @@ dynamic_ip_loop() {
 }
 
 # ===========================
-# SCAN NETWORK DEVICES (using nmap)
+# SCAN NETWORK DEVICES (using nmap on the VPN interface)
 # ===========================
 scan_network_devices() {
-    echo "🔍 Scanning network devices in $VPN_SUBNET..."
-    nmap -sP "$VPN_SUBNET"
+    echo "🔍 Scanning network devices in $VPN_SUBNET using interface $SCAN_INTERFACE..."
+    nmap -sn -e "$SCAN_INTERFACE" "$VPN_SUBNET"  # -sn for ping scan, -e for interface selection
 }
 
 # ===========================
