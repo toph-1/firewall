@@ -1,50 +1,46 @@
 #!/bin/bash
 
 # =========================================
-# STRICT FIREWALL + VPN IP ROTATION + DEVICE SCAN
+# STABLE FIREWALL + SAFE RESTORE + NETWORK SCAN
 # =========================================
 
 if [ "$EUID" -ne 0 ]; then
-    echo "⚠️ Run this as root: sudo $0"
+    echo "⚠️ Run as root: sudo $0"
     exit 1
 fi
 
-# ===========================
-# AUTO-DETECT NETWORK INTERFACE
-# ===========================
-INTERFACE=$(ip -o -4 route show to default | awk '{print $5}')
-VPN_INTERFACE="tun0"  # Your VPN tunnel interface (verify with `ip a`)
+# Detect main interface
+INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
 
 if [ -z "$INTERFACE" ]; then
-    echo "❌ Could not detect a network interface."
+    echo "❌ Could not detect network interface"
     exit 1
 fi
 
-echo "✔️ Detected network interface: $INTERFACE"
+echo "✔️ Interface: $INTERFACE"
 
-# ===========================
-# CONFIG
-# ===========================
-ORIGINAL_IP=$(ip addr show $INTERFACE | grep "inet " | awk '{print $2}')
-ORIGINAL_RULES="/etc/nftables.conf.bak.$(date +%F-%T)"
-VPN_SUBNET="10.8.0.0/24"  # VPN subnet range (change as per your VPN config)
-SCAN_INTERFACE="$VPN_INTERFACE"  # Set nmap to use VPN interface for scanning
+# Get original IP safely
+ORIGINAL_IP=$(ip -4 addr show "$INTERFACE" | grep inet | awk '{print $2}' | head -n1)
 
-# ===========================
-# BACKUP CURRENT FIREWALL
-# ===========================
-if [ -f /etc/nftables.conf ]; then
-    cp /etc/nftables.conf "$ORIGINAL_RULES"
+if [ -z "$ORIGINAL_IP" ]; then
+    echo "❌ Could not detect original IP"
+    exit 1
 fi
 
+echo "✔️ Original IP: $ORIGINAL_IP"
+
+BACKUP="/etc/nftables.conf.backup"
+
+# Backup firewall
+[ -f /etc/nftables.conf ] && cp /etc/nftables.conf "$BACKUP"
+
 # ===========================
-# APPLY STRICT FIREWALL
+# APPLY FIREWALL
 # ===========================
 apply_firewall() {
     echo "🔒 Applying strict firewall..."
-    apt update >/dev/null 2>&1
+
     apt install -y nftables >/dev/null 2>&1
-    systemctl stop nftables
 
     cat > /etc/nftables.conf << 'EOF'
 table inet filter {
@@ -59,93 +55,68 @@ table inet filter {
 }
 EOF
 
-    systemctl start nftables
-    chown root:root /etc/nftables.conf
-    chmod 600 /etc/nftables.conf
-    chattr +i /etc/nftables.conf
+    systemctl restart nftables
 }
 
 # ===========================
-# RESTORE FIREWALL
+# RESTORE EVERYTHING
 # ===========================
-restore_firewall() {
-    echo "🔓 Restoring original firewall..."
-    chattr -i /etc/nftables.conf 2>/dev/null
-    systemctl stop nftables
-    if [ -f "$ORIGINAL_RULES" ]; then
-        cp "$ORIGINAL_RULES" /etc/nftables.conf
+restore() {
+    echo "🔓 Restoring system..."
+
+    # Restore firewall
+    if [ -f "$BACKUP" ]; then
+        cp "$BACKUP" /etc/nftables.conf
+        systemctl restart nftables
     fi
-    systemctl start nftables
-}
 
-# ===========================
-# CREATE VIRTUAL INTERFACE FOR VPN (if necessary)
-# ===========================
-create_virtual_interface() {
-    echo "🌐 Creating virtual network interface $VPN_INTERFACE..."
-    ip link add link "$INTERFACE" name "$VPN_INTERFACE" type macvlan mode bridge
-    ip addr add 10.8.0.100/24 dev "$VPN_INTERFACE"  # Starting IP for the virtual interface
-    ip link set "$VPN_INTERFACE" up
-}
+    # Restore IP (only if missing)
+    CURRENT_IP=$(ip -4 addr show "$INTERFACE" | grep inet | awk '{print $2}' | head -n1)
 
-# ===========================
-# DYNAMIC IP LOOP (VPN NETWORK)
-# ===========================
-dynamic_ip_loop() {
-    echo "🌐 Starting dynamic VPN IP rotation on $VPN_INTERFACE..."
-    trap restore_on_exit SIGINT SIGTERM
-    while true; do
-        # Generate a random local IP within VPN subnet (10.8.x.x is an example)
-        NEW_IP="10.8.$((RANDOM%254+1)).$((RANDOM%254+1))/24"
-        
-        ip addr flush dev "$VPN_INTERFACE"  # Flush current IP
-        ip addr add "$NEW_IP" dev "$VPN_INTERFACE"  # Set new random IP
+    if [ -z "$CURRENT_IP" ]; then
+        ip addr add "$ORIGINAL_IP" dev "$INTERFACE"
+    fi
 
-        # Wait for a second before changing again
-        sleep 1
-    done
-}
-
-# ===========================
-# SCAN NETWORK DEVICES (using nmap on the VPN interface)
-# ===========================
-scan_network_devices() {
-    echo "🔍 Scanning network devices in $VPN_SUBNET using interface $SCAN_INTERFACE..."
-    nmap -sn -e "$SCAN_INTERFACE" "$VPN_SUBNET"  # -sn for ping scan, -e for interface selection
-}
-
-# ===========================
-# RESTORE ON EXIT (Remove Virtual Interface)
-# ===========================
-restore_on_exit() {
-    echo "⚠️ Detected stop signal, restoring everything..."
-    ip addr flush dev "$VPN_INTERFACE"  # Remove IP from virtual interface
-    ip link set "$VPN_INTERFACE" down  # Bring the virtual interface down
-    ip link delete "$VPN_INTERFACE"  # Delete the virtual interface
-    restore_firewall
-    ip addr add "$ORIGINAL_IP" dev "$INTERFACE"  # Restore original IP to main interface
-    echo "✅ Everything restored."
+    echo "✅ Restored successfully"
     exit 0
 }
 
+trap restore SIGINT SIGTERM
+
 # ===========================
-# MAIN
+# NETWORK SCAN (LOCAL ONLY)
 # ===========================
-echo "1) Apply strict firewall + dynamic VPN IP rotation + scan devices"
-echo "2) Restore firewall + original IP now"
+scan_network() {
+    SUBNET=$(ip -4 route | grep "$INTERFACE" | grep src | awk '{print $1}' | head -n1)
+
+    if [ -z "$SUBNET" ]; then
+        echo "❌ Could not detect subnet"
+        return
+    fi
+
+    echo "🔍 Scanning network: $SUBNET"
+
+    apt install -y nmap >/dev/null 2>&1
+
+    nmap -sn "$SUBNET"
+}
+
+# ===========================
+# MENU
+# ===========================
+echo "1) Apply strict firewall + scan network"
+echo "2) Restore now"
 read -p "Choose: " choice
 
 case $choice in
     1)
         apply_firewall
-        create_virtual_interface
-        dynamic_ip_loop &
-        scan_network_devices
+        scan_network
         ;;
     2)
-        restore_on_exit
+        restore
         ;;
     *)
-        echo "❌ Invalid choice."
+        echo "❌ Invalid choice"
         ;;
 esac
