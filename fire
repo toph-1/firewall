@@ -1,35 +1,56 @@
 #!/bin/bash
 
 # ===========================
-# OPENVPN IP ROTATOR (SAFE)
+# SMART FAST VPN ROTATOR
 # ===========================
 
-VPN_CONFIG="/path/to/your/config.ovpn"
-INTERVAL=60   # seconds (don’t go too low)
+VPN1="/path/to/server1.ovpn"
+VPN2="/path/to/server2.ovpn"
+HOLD_TIME=3   # how long to stay connected AFTER success
 
 if [ "$EUID" -ne 0 ]; then
     echo "Run as root: sudo $0"
     exit 1
 fi
 
-while true; do
-    echo "🔄 Restarting OpenVPN..."
+get_ip() {
+    curl -s --max-time 5 ifconfig.me
+}
 
-    # Kill existing OpenVPN
+wait_for_vpn() {
+    echo "⏳ Waiting for VPN to connect..."
+    for i in {1..15}; do
+        IP=$(get_ip)
+        if [[ -n "$IP" ]]; then
+            echo "🌐 Connected with IP: $IP"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "⚠️ VPN connection timeout"
+    return 1
+}
+
+start_vpn() {
+    CONFIG=$1
+    echo "🔌 Switching to $CONFIG"
+
     pkill openvpn 2>/dev/null
-    sleep 3
+    sleep 2
 
-    # Start OpenVPN in background
-    openvpn --config "$VPN_CONFIG" --daemon
+    openvpn --config "$CONFIG" --daemon
+}
 
-    # Wait for connection to establish
-    sleep 10
+while true; do
+    start_vpn "$VPN1"
+    if wait_for_vpn; then
+        echo "⏱ Holding for $HOLD_TIME seconds..."
+        sleep $HOLD_TIME
+    fi
 
-    # Show new IP
-    echo "🌐 Current public IP:"
-    curl -s ifconfig.me
-    echo ""
-
-    echo "⏳ Waiting $INTERVAL seconds before next rotation..."
-    sleep $INTERVAL
+    start_vpn "$VPN2"
+    if wait_for_vpn; then
+        echo "⏱ Holding for $HOLD_TIME seconds..."
+        sleep $HOLD_TIME
+    fi
 done
