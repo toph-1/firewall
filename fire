@@ -1,75 +1,35 @@
 #!/bin/bash
 
-# =========================================
-# STRICT PERSONAL FIREWALL: ONLY YOUR MACHINE
-# =========================================
+# ===========================
+# OPENVPN IP ROTATOR (SAFE)
+# ===========================
+
+VPN_CONFIG="/path/to/your/config.ovpn"
+INTERVAL=60   # seconds (don’t go too low)
 
 if [ "$EUID" -ne 0 ]; then
-    echo "⚠️ Run as root: sudo $0"
+    echo "Run as root: sudo $0"
     exit 1
 fi
 
-# Detect main network interface
-INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
-if [ -z "$INTERFACE" ]; then
-    echo "❌ Could not detect network interface"
-    exit 1
-fi
+while true; do
+    echo "🔄 Restarting OpenVPN..."
 
-# Get your current IP
-MY_IP=$(ip -4 addr show "$INTERFACE" | grep inet | awk '{print $2}' | head -n1)
-if [ -z "$MY_IP" ]; then
-    echo "❌ Could not detect your IP"
-    exit 1
-fi
+    # Kill existing OpenVPN
+    pkill openvpn 2>/dev/null
+    sleep 3
 
-BACKUP="/etc/nftables.conf.backup.$(date +%F-%T)"
+    # Start OpenVPN in background
+    openvpn --config "$VPN_CONFIG" --daemon
 
-# Backup existing firewall
-[ -f /etc/nftables.conf ] && cp /etc/nftables.conf "$BACKUP"
+    # Wait for connection to establish
+    sleep 10
 
-apply_firewall() {
-    echo "🔒 Applying personal-only firewall..."
-    apt install -y nftables >/dev/null 2>&1
+    # Show new IP
+    echo "🌐 Current public IP:"
+    curl -s ifconfig.me
+    echo ""
 
-    cat > /etc/nftables.conf << EOF
-table inet filter {
-    chain input {
-        type filter hook input priority 0;
-        policy drop;
-        # Allow loopback
-        iif lo accept
-        # Allow traffic only from your own IP
-        ip saddr $MY_IP accept
-        ct state established,related accept
-    }
-    chain forward { policy drop; }
-    chain output { policy accept; }
-}
-EOF
-
-    systemctl restart nftables
-    echo "✅ Firewall active. Only your IP can communicate!"
-}
-
-restore_firewall() {
-    echo "🔓 Restoring original firewall..."
-    if [ -f "$BACKUP" ]; then
-        cp "$BACKUP" /etc/nftables.conf
-        systemctl restart nftables
-        echo "✅ Restored successfully"
-    else
-        echo "⚠️ No backup found. Firewall left as is."
-    fi
-}
-
-# Menu
-echo "1) Apply personal-only firewall"
-echo "2) Restore original firewall"
-read -p "Choose: " choice
-
-case $choice in
-    1) apply_firewall ;;
-    2) restore_firewall ;;
-    *) echo "❌ Invalid choice" ;;
-esac
+    echo "⏳ Waiting $INTERVAL seconds before next rotation..."
+    sleep $INTERVAL
+done
