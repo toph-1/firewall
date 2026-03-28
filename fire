@@ -1,0 +1,111 @@
+#!/bin/bash
+
+# =========================================
+# STRICT FIREWALL + DYNAMIC LAN IP (Safe Stop)
+# =========================================
+
+if [ "$EUID" -ne 0 ]; then
+    echo "⚠️ Run this as root: sudo $0"
+    exit 1
+fi
+
+# ===========================
+# CONFIG
+# ===========================
+INTERFACE="eth0"  # Replace with your actual interface (use `ip a` to check)
+ORIGINAL_IP=$(ip addr show $INTERFACE | grep "inet " | awk '{print $2}')
+ORIGINAL_RULES="/etc/nftables.conf.bak.$(date +%F-%T)"
+
+# ===========================
+# BACKUP CURRENT FIREWALL
+# ===========================
+if [ -f /etc/nftables.conf ]; then
+    cp /etc/nftables.conf "$ORIGINAL_RULES"
+fi
+
+# ===========================
+# APPLY STRICT FIREWALL
+# ===========================
+apply_firewall() {
+    echo "🔒 Applying strict firewall..."
+    apt update >/dev/null 2>&1
+    apt install -y nftables >/dev/null 2>&1
+    systemctl stop nftables
+
+    cat > /etc/nftables.conf << 'EOF'
+table inet filter {
+    chain input {
+        type filter hook input priority 0;
+        policy drop;
+        iif lo accept
+        ct state established,related accept
+    }
+    chain forward { policy drop; }
+    chain output { policy accept; }
+}
+EOF
+
+    systemctl start nftables
+    chown root:root /etc/nftables.conf
+    chmod 600 /etc/nftables.conf
+    chattr +i /etc/nftables.conf
+}
+
+# ===========================
+# RESTORE FIREWALL
+# ===========================
+restore_firewall() {
+    echo "🔓 Restoring original firewall..."
+    chattr -i /etc/nftables.conf 2>/dev/null
+    systemctl stop nftables
+    if [ -f "$ORIGINAL_RULES" ]; then
+        cp "$ORIGINAL_RULES" /etc/nftables.conf
+    fi
+    systemctl start nftables
+}
+
+# ===========================
+# DYNAMIC IP LOOP
+# ===========================
+dynamic_ip_loop() {
+    echo "🌐 Starting dynamic LAN IP on $INTERFACE..."
+    trap restore_on_exit SIGINT SIGTERM
+    while true; do
+        NEW_IP="192.168.$((RANDOM%254+1)).$((RANDOM%254+1))/24"
+        ip addr flush dev "$INTERFACE"
+        ip addr add "$NEW_IP" dev "$INTERFACE"
+        sleep 1
+    done
+}
+
+# ===========================
+# RESTORE ON EXIT
+# ===========================
+restore_on_exit() {
+    echo "⚠️ Detected stop signal, restoring everything..."
+    ip addr flush dev "$INTERFACE"
+    ip addr add "$ORIGINAL_IP" dev "$INTERFACE"
+    restore_firewall
+    echo "✅ Everything restored."
+    exit 0
+}
+
+# ===========================
+# MAIN
+# ===========================
+echo "1) Apply strict firewall + dynamic IP"
+echo "2) Restore firewall + original IP now"
+read -p "Choose: " choice
+
+case $choice in
+    1)
+        apply_firewall
+        dynamic_ip_loop
+        ;;
+    2)
+        restore_on_exit
+        ;;
+    *)
+        echo "❌ Invalid choice."
+        ;;
+esac
